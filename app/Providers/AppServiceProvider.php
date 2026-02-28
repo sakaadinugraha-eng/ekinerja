@@ -2,7 +2,10 @@
 
 namespace App\Providers;
 
-use Illuminate\Support\ServiceProvider;
+// BARIS INI YANG BIASANYA HILANG ATAU SALAH:
+use Illuminate\Support\ServiceProvider; 
+use Illuminate\Support\Facades\Gate;
+use App\Models\User;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -19,6 +22,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        // Gate untuk akses Atasan yang kita buat tadi
+        Gate::define('akses-atasan', function (User $user) {
+            return $user->role === 'atasan';
+        });
     }
 }

@@ -1,8 +1,6 @@
-*.log
+# Editor & OS files
 .DS_Store
-.env
-.env.backup
-.env.production
+Thumbs.db
 .phpactor.json
 .phpunit.result.cache
 /.fleet
@@ -11,14 +9,31 @@
 /.phpunit.cache
 /.vscode
 /.zed
+
+# Laravel specific
+.env
+.env.backup
+.env.production
 /auth.json
 /node_modules
+/vendor
 /public/build
 /public/hot
-/public/storage
-/storage/*.key
-/storage/pail
-/vendor
 Homestead.json
 Homestead.yaml
-Thumbs.db
+
+# Storage handling (Keep folder, ignore content)
+/storage/app/public/*
+/storage/framework/cache/data/*
+/storage/framework/sessions/*
+/storage/framework/testing/*
+/storage/framework/views/*
+/storage/logs/*.log
+/storage/*.key
+/storage/pail
+
+# Exclude storage link
+/public/storage
+
+# Spesifik untuk menghindari file log umum
+*.log

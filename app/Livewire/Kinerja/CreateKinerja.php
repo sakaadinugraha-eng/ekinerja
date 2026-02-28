@@ -3,9 +3,9 @@
 namespace App\Livewire\Kinerja;
 
 use App\Models\Activity;
-use App\Models\RefKegiatan; // Sesuaikan dengan model referensi kamu (ActivityReference/RefKegiatan)
+use App\Models\RefKegiatan;
 use Livewire\Component;
-use Livewire\Attributes\Validate;
+use Livewire\WithPagination;
 use Carbon\Carbon;
 
 class CreateKinerja extends Component
@@ -14,10 +14,12 @@ class CreateKinerja extends Component
     public $bulan;
 
     // Form Input
-    public $id_edit = null; // TAMBAHAN: Untuk menyimpan ID saat mode edit
+    public $id_edit = null;
     public $tanggal;
+    public $selected_jenis = ''; // Menampung pilihan Jenis
     public $selected_kegiatan_id;
-    public $jenis_kegiatan;
+    public $list_kegiatan_filtered = []; // Menampung hasil filter kegiatan
+    
     public $nama_kegiatan;
     public $keterangan;
     public $catatan;
@@ -30,56 +32,78 @@ class CreateKinerja extends Component
         $this->tanggal = date('Y-m-d');
     }
 
-    // Reset form saat modal ditutup atau selesai simpan
     public function resetInput()
     {
-        $this->reset(['id_edit', 'selected_kegiatan_id', 'jenis_kegiatan', 'nama_kegiatan', 'keterangan', 'catatan', 'output', 'menit']);
-        // Tanggal jangan direset biar user gak capek milih tanggal lagi
+        $this->reset([
+            'id_edit', 'selected_jenis', 'selected_kegiatan_id', 
+            'nama_kegiatan', 'keterangan', 'catatan', 'output', 'menit',
+            'list_kegiatan_filtered'
+        ]);
     }
 
-    public function updatedSelectedKegiatanId($id)
+    // --- LOGIC DEPENDENT DROPDOWN ---
+
+    // 1. Ketika Jenis Dipilih
+    public function updatedSelectedJenis($value)
     {
-        // Sesuaikan Model ini dengan nama Model Referensi kamu (ActivityReference atau RefKegiatan)
-        $ref = RefKegiatan::find($id);
+        if ($value) {
+            // Ambil kegiatan berdasarkan jenis, ubah ke Array agar Alpine.js lancar membaca
+            $this->list_kegiatan_filtered = RefKegiatan::where('nama_jenis', $value)
+                ->where('aktif', 'ya')
+                ->get()
+                ->toArray();
+        } else {
+            $this->list_kegiatan_filtered = [];
+        }
         
-        if ($ref) {
-            // Jika referensi punya kolom 'nama_jenis', sesuaikan. 
-            // Kalau di tabel cuma ada 'nama_kegiatan', hapus bagian jenis_kegiatan
-            $this->jenis_kegiatan = $ref->nama_jenis ?? '-'; 
-            $this->nama_kegiatan = $ref->nama_kegiatan;
-            $this->output = $ref->output ?? 'Kegiatan'; // Default jika output null
-            $this->menit = $ref->menit_standar ?? 0; // Otomatis isi menit standar jika ada
-        } 
+        // Reset pilihan kegiatan jika jenis diganti
+        $this->selected_kegiatan_id = null;
+        $this->nama_kegiatan = null;
+        $this->output = null;
     }
 
-    // FUNGSI BARU: Menangani tombol Edit ditekan
+    // 2. Ketika ID Kegiatan Dipilih (Dari Alpine.js Search)
+    public function updatedSelectedKegiatanId($value)
+    {
+        if ($value) {
+            $ref = RefKegiatan::find($value);
+            if ($ref) {
+                $this->nama_kegiatan = $ref->nama_kegiatan;
+                $this->output = $ref->output;
+            }
+        }
+    }
+
+    // --- LOGIC CRUD ---
+
     public function edit($id)
     {
         $act = Activity::findOrFail($id);
 
-        // Pastikan yang diedit adalah milik user sendiri
-        if ($act->user_id != auth()->id()) {
+        if ($act->user_id != auth()->id()) return;
+
+        if (!in_array($act->status, ['draft', 'rejected']) && auth()->user()->role !== 'atasan') {
+            session()->flash('error', 'Data terkunci dan tidak bisa diedit.');
             return;
         }
 
         $this->id_edit = $act->id;
         $this->tanggal = $act->tanggal;
         
-        // Kita cari ID referensi berdasarkan nama kegiatan (Manual matching)
-        // Atau jika tabel activity menyimpan referensi_id, pakai itu lebih baik.
-        // Di sini saya asumsikan manual matching atau null jika custom
+        // Cari referensinya untuk menentukan jenisnya apa
         $ref = RefKegiatan::where('nama_kegiatan', $act->nama_kegiatan)->first();
-        $this->selected_kegiatan_id = $ref ? $ref->id : null;
+        if($ref) {
+            $this->selected_jenis = $ref->nama_jenis;
+            // Trigger manual fungsi update jenis agar list_kegiatan_filtered terisi
+            $this->updatedSelectedJenis($this->selected_jenis);
+            $this->selected_kegiatan_id = $ref->id;
+        }
 
-        $this->jenis_kegiatan = $act->jenis_kegiatan;
         $this->nama_kegiatan = $act->nama_kegiatan;
         $this->keterangan = $act->keterangan;
         $this->catatan = $act->catatan;
         $this->output = $act->output;
         $this->menit = $act->menit;
-
-        // Buka Modal (Opsional, jika menggunakan alpine watcher di view)
-        // $this->dispatch('open-modal'); 
     }
 
     private function getMaxMenit($date)
@@ -96,23 +120,29 @@ class CreateKinerja extends Component
     public function simpan()
     {
         $maxMenit = $this->getMaxMenit($this->tanggal);
-        
         if ($maxMenit <= 0) {
-            $this->addError('tanggal', 'Hari Sabtu & Minggu adalah hari libur (0 menit).');
+            $this->addError('tanggal', 'Hari Sabtu & Minggu libur.');
             return;
         }
 
-        // HITUNG TOTAL: Kecualikan ID yang sedang diedit agar tidak double counting
-        $query = Activity::where('user_id', auth()->id())->where('tanggal', $this->tanggal);
-        
         if ($this->id_edit) {
-            $query->where('id', '!=', $this->id_edit);
+            $existing = Activity::find($this->id_edit);
+            if ($existing && !in_array($existing->status, ['draft', 'rejected']) && auth()->user()->role !== 'atasan') {
+                session()->flash('error', 'Gagal menyimpan. Data terkunci.');
+                $this->resetInput();
+                $this->dispatch('close-modal');
+                return;
+            }
         }
 
+        $query = Activity::where('user_id', auth()->id())->where('tanggal', $this->tanggal);
+        if ($this->id_edit) $query->where('id', '!=', $this->id_edit);
         $totalSudahInput = $query->sum('menit');
 
         $this->validate([
             'tanggal' => 'required|date',
+            'selected_jenis' => 'required',
+            'selected_kegiatan_id' => 'required',
             'keterangan' => 'required|min:5',
             'output' => 'required',
             'menit' => [
@@ -120,49 +150,70 @@ class CreateKinerja extends Component
                 function ($attribute, $value, $fail) use ($maxMenit, $totalSudahInput) {
                     if (($totalSudahInput + $value) > $maxMenit) {
                         $sisa = max(0, $maxMenit - $totalSudahInput);
-                        $fail("Over kuota! Batas: $maxMenit m. Sisa kuota: $sisa m.");
+                        $fail("Over kuota! Sisa: $sisa m.");
                     }
                 },
             ],
-        ], [
-            'keterangan.required' => 'Keterangan wajib diisi.',
-            'menit.required' => 'Durasi wajib diisi.',
         ]);
 
-        // LOGIKA UPDATE ATAU CREATE (Pakai updateOrCreate)
         Activity::updateOrCreate(
-            ['id' => $this->id_edit], // Kunci pencarian (jika null, akan create baru)
+            ['id' => $this->id_edit],
             [
                 'user_id' => auth()->id(),
                 'tanggal' => $this->tanggal,
-                'jenis_kegiatan' => $this->jenis_kegiatan ?? 'Harian',
-                'nama_kegiatan' => $this->nama_kegiatan ?? $this->keterangan, // Fallback jika kosong
+                'jenis_kegiatan' => $this->selected_jenis,
+                'nama_kegiatan' => $this->nama_kegiatan,
                 'keterangan' => $this->keterangan,
                 'catatan' => $this->catatan,
                 'output' => $this->output,
                 'menit' => $this->menit,
-                'status' => 'draft'
+                'status' => (auth()->user()->role === 'atasan') ? 'approved' : 'draft'
             ]
         );
 
-        $this->resetInput(); // Reset form
-        $this->dispatch('close-modal'); // Tutup modal di view
-        
-        session()->flash('message', $this->id_edit ? 'Kinerja berhasil diperbarui!' : 'Kinerja berhasil disimpan!');
+        $this->resetInput();
+        $this->dispatch('close-modal');
+        session()->flash('message', 'Kinerja berhasil disimpan!');
     }
-
-    public function hapus($id)
+    
+    public function ajukanKeAtasan()
     {
-        $activity = Activity::find($id);
-        if ($activity && $activity->user_id == auth()->id()) {
-            $activity->delete();
-            session()->flash('message', 'Data berhasil dihapus.');
+        $parts = explode('-', $this->bulan);
+        $year = $parts[0] ?? date('Y');
+        $month = $parts[1] ?? date('m');
+
+        // Ambil data yang akan diajukan
+        $query = \App\Models\Activity::where('user_id', auth()->id())
+            ->whereYear('tanggal', $year)
+            ->whereMonth('tanggal', $month)
+            ->whereIn('status', ['draft', 'rejected']);
+
+        $count = $query->count();
+        $affected = $query->update(['status' => 'pending']);
+
+        if ($affected > 0) {
+            // --- LOGIKA NOTIFIKASI START ---
+            $admins = \App\Models\User::where('role', 'atasan')->get();
+            $namaPegawai = auth()->user()->name;
+            $periode = Carbon::parse($this->bulan)->translatedFormat('F Y');
+
+            foreach ($admins as $admin) {
+                $admin->notify(new \App\Notifications\KinerjaBaruNotification([
+                    'title' => 'Pengajuan Kinerja Baru',
+                    'message' => "Pegawai $namaPegawai mengajukan $affected kegiatan untuk periode $periode.",
+                    'action_url' => route('atasan.validasi'), // Arahkan atasan ke halaman validasi
+                ]));
+            }
+            // --- LOGIKA NOTIFIKASI END ---
+
+            session()->flash('message', "Berhasil mengajukan $affected kegiatan ke atasan!");
+        } else {
+            session()->flash('error', 'Tidak ada data draft untuk diajukan bulan ini.');
         }
     }
 
     public function render()
     {
-        // 1. DATA TABEL (Berdasarkan BULAN filter)
         $parts = explode('-', $this->bulan);
         $year = $parts[0] ?? date('Y');
         $month = $parts[1] ?? date('m');
@@ -173,28 +224,21 @@ class CreateKinerja extends Component
             ->orderBy('tanggal', 'desc')
             ->get();
 
-        // 2. DATA STATISTIK (Berdasarkan TANGGAL INPUT untuk progress bar)
         $tglFokus = $this->tanggal ?? date('Y-m-d');
-        
-        // Ambil data hari itu untuk hitung progress bar
-        $dailyStatsActivity = auth()->user()->activities()->where('tanggal', $tglFokus)->get();
-        
-        $totalMenit = $dailyStatsActivity->sum('menit');
+        $dailyTotalMenit = auth()->user()->activities()->where('tanggal', $tglFokus)->sum('menit');
         $targetMenit = $this->getMaxMenit($tglFokus);
-        $persentase = ($targetMenit > 0) ? round(($totalMenit / $targetMenit) * 100) : 0;
         
-        // Kirim List Referensi (Pastikan nama Modelnya benar, misal ActivityReference)
-        // Jika nama modelmu RefKegiatan, pakai RefKegiatan. Jika ActivityReference, ganti.
-        $listReferensi = RefKegiatan::all(); 
+        // Ambil list jenis unik untuk dropdown
+        $listJenis = RefKegiatan::where('aktif', 'ya')->select('nama_jenis')->distinct()->pluck('nama_jenis');
 
         return view('livewire.kinerja.create-kinerja', [
             'activities' => $activities,
-            'listReferensi' => $listReferensi,
+            'listJenis' => $listJenis,
             'stats' => [
-                'total_menit' => $totalMenit,
+                'total_menit' => $dailyTotalMenit,
                 'target_menit' => $targetMenit,
-                'sisa_menit' => max(0, $targetMenit - $totalMenit),
-                'persentase' => min(100, $persentase),
+                'sisa_menit' => max(0, $targetMenit - $dailyTotalMenit),
+                'persentase' => ($targetMenit > 0) ? min(100, round(($dailyTotalMenit / $targetMenit) * 100)) : 0,
                 'label_hari' => Carbon::parse($tglFokus)->translatedFormat('l'),
                 'is_libur' => ($targetMenit <= 0)
             ]
