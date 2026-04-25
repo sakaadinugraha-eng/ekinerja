@@ -1,0 +1,7 @@
+akses : 
+
+1. Localhost/login
+2. User : edicahyono@gmail.com 
+   pass	: 12345678
+   User : sakaadinugraha@gmail.com 
+   pass	: 12345678
